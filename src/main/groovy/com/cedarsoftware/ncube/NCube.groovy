@@ -14,6 +14,8 @@ import com.cedarsoftware.util.io.MetaUtils
 import groovy.transform.CompileStatic
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.context.annotation.PropertySource
 
 import java.lang.reflect.Array
 import java.lang.reflect.Field
@@ -293,8 +295,12 @@ class NCube<T>
      * It consists of a String cube Name and a Set of
      * Column references (one Column per axis).
      */
+    @PropertySource(value='classpath:application.properties')
     private static class StackEntry
     {
+        //@Value('${ncube.stackEntry.coordinate.value.max.size:1000}') int maxSize
+        int maxSize = 1000
+
         final String cubeName
         final Map coord
 
@@ -313,7 +319,12 @@ class NCube<T>
             while (i.hasNext())
             {
                 Map.Entry<String, Object> coordinate = i.next()
-                s.append("${coordinate.key}:${coordinate.value}")
+                String value = coordinate.value.toString()
+                if (value.size() > maxSize)
+                {
+                    value = "${value[0..(maxSize - 1)]}..."
+                }
+                s.append("${coordinate.key}:${value}")
                 if (i.hasNext())
                 {
                     s.append(',')
