@@ -52,10 +52,10 @@
       "defaultValue": "false"
     },
     {
-      "name": "ncube.stackEntry.coordinate.value.max.size",
+      "name": "ncube.stackEntry.coordinate.value.max",
       "type": "java.lang.Integer",
-      "sourceType": "com.cedarsoftware.ncube.NCube",
-      "description": "Abbreviate coordinate values on StackEntry to a max size.",
+      "sourceType": "com.cedarsoftware.config.NCubeConfiguration",
+      "description": "Abbreviate coordinate value strings on StackEntry to a max size.",
       "defaultValue": "1000"
     },
     {
