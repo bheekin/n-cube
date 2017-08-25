@@ -347,7 +347,8 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
     {
         verifyAllowMutable('mergeDeltas')
         NCube ncube = bean.call(beanName, 'mergeDeltas', [appId, cubeName, deltas]) as NCube
-        return cacheCube(ncube)
+        cacheCube(ncube)
+        return ncube
     }
 
     Boolean deleteCubes(ApplicationID appId, Object[] cubeNames)
@@ -781,9 +782,7 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
         for (int i=0; i < len; i++)
         {
             Map<String, Object> map = stacks[i]
-            s.append('<b style="color:darkred">')
-            s.append(map.msg)
-            s.append('</b><br>')
+            s.append("""<b style="color:darkred">${map.msg}</b><br>""")
 
             if (i != len - 1i)
             {
@@ -798,7 +797,7 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
             }
         }
 
-        return '<pre>' + s + '</pre>'
+        return "<pre>${s}</pre>"
     }
 
     private static String trace(StackTraceElement[] stackTrace, StackTraceElement[] nextStrackTrace)
@@ -816,10 +815,8 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
             }
             else
             {
-                s.append(element.className)
-                s.append('.')
-                s.append(element.methodName)
-                s.append('()&nbsp;<small><b class="pull-right">')
+                s.append("""${element.className}.${element.methodName}()&nbsp;<small><b class="pull-right">""")
+
                 if (element.nativeMethod)
                 {
                     s.append('Native Method')
@@ -828,9 +825,7 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
                 {
                     if (element.fileName)
                     {
-                        s.append(element.fileName)
-                        s.append(':')
-                        s.append(element.lineNumber)
+                        s.append("""${element.fileName}:${element.lineNumber}""")
                     }
                     else
                     {
@@ -931,15 +926,13 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
         prepareCube(ncube)
     }
 
-    private NCube cacheCube(NCube ncube)
+    private void cacheCube(NCube ncube)
     {
         if (!ncube.metaProperties.containsKey(PROPERTY_CACHE) || Boolean.TRUE == ncube.getMetaProperty(PROPERTY_CACHE))
         {
             Cache cubeCache = ncubeCacheManager.getCache(ncube.applicationID.cacheKey())
-            Cache.ValueWrapper item = cubeCache.putIfAbsent(ncube.name.toLowerCase(), ncube)
-            return item.get() as NCube
+            cubeCache.put(ncube.name.toLowerCase(), ncube)
         }
-        return ncube
     }
 
     private NCube getCubeInternal(ApplicationID appId, String cubeName)
@@ -970,7 +963,8 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
     private NCube prepareCube(NCube cube)
     {
         applyAdvices(cube)
-        return cacheCube(cube)
+        cacheCube(cube)
+        return cube
     }
 
     //-- Advice --------------------------------------------------------------------------------------------------------
@@ -982,7 +976,7 @@ class NCubeRuntime implements NCubeMutableClient, NCubeRuntimeClient, NCubeTestC
     {
         ApplicationID.validateAppId(appId)
         Cache current = adviceCacheManager.getCache(appId.cacheKey())
-        current.putIfAbsent("${advice.name}/${wildcard}".toString(), advice)
+        current.put("${advice.name}/${wildcard}".toString(), advice)
 
         // Apply newly added advice to any fully loaded (hydrated) cubes.
         String regex = StringUtilities.wildcardToRegexString(wildcard)
