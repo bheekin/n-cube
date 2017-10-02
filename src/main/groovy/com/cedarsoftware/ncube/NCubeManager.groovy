@@ -820,14 +820,6 @@ class NCubeManager implements NCubeMutableClient, NCubeTestServer
         return branches.length
     }
 
-    private String getCubeRawJson(ApplicationID appId, String cubeName)
-    {
-        assertPermissions(appId, cubeName)
-        Map record = persister.loadCubeRecord(appId, cubeName, null, getUserId())
-        String json = new String(IOUtilities.uncompressBytes(record.bytes as byte[]), "UTF-8")
-        return json
-    }
-
     String getJson(ApplicationID appId, String cubeName, Map options)
     {
         throw new IllegalStateException("getJson(${appId}, ${cubeName}) should not be called on a storage server")
@@ -931,12 +923,9 @@ class NCubeManager implements NCubeMutableClient, NCubeTestServer
         ApplicationID.validateAppId(appId)
         assertPermissions(appId, null)
 
-        List<NCubeInfoDto> list = search(appId, null, "${REF_APP}", [(SEARCH_ACTIVE_RECORDS_ONLY):true])
-        List<AxisRef> refAxes = []
+        Closure getRefAxes = { NCubeInfoDto dto, Object refAxes ->
+            String json = new String(IOUtilities.uncompressBytes(dto.bytes as byte[]), "UTF-8")
 
-        for (NCubeInfoDto source : list)
-        {
-            String json = getCubeRawJson(appId, source.name)
             //TODO - fix asap!!! call loadCube() which will use new parser
             Map jsonNCube = (Map) JsonReader.jsonToJava(json, [(JsonReader.USE_MAPS): true as Object])
             Object[] axes = jsonNCube.axes as Object[]
@@ -947,7 +936,7 @@ class NCubeManager implements NCubeMutableClient, NCubeTestServer
                 {
                     AxisRef ref = new AxisRef()
                     ref.srcAppId = appId
-                    ref.srcCubeName = source.name
+                    ref.srcCubeName = dto.name
                     ref.srcAxisName = axis.name
 
                     ref.destApp = axis[REF_APP]
@@ -966,10 +955,14 @@ class NCubeManager implements NCubeMutableClient, NCubeTestServer
                         ref.transformCubeName = axis[TRANSFORM_CUBE_NAME]
                     }
 
-                    refAxes.add(ref)
+                    ((List<AxisRef>)refAxes).add(ref)
                 }
             }
         }
+        List<AxisRef> refAxes = []
+        Map options = [(SEARCH_ACTIVE_RECORDS_ONLY): true, (SEARCH_CLOSURE): getRefAxes, (SEARCH_OUTPUT): refAxes]
+        search(appId, null, "${REF_APP}", options)
+
         return refAxes
     }
 
@@ -1072,35 +1065,38 @@ class NCubeManager implements NCubeMutableClient, NCubeTestServer
             String cubeName = axisRef.srcCubeName
             if (!appIdCubeNames.containsKey(appId))
             {
-                appIdCubeNames[appId] = [:]
+                appIdCubeNames[appId] = new CaseInsensitiveMap<>()
             }
             if (!appIdCubeNames[appId].containsKey(cubeName))
             {
-                appIdCubeNames[appId][cubeName] = new HashSet<AxisRef>()
+                appIdCubeNames[appId][cubeName] = new LinkedHashSet<AxisRef>()
             }
             appIdCubeNames[appId][cubeName].add(axisRef)
         }
 
-        for (Map.Entry<ApplicationID, Map<String, Set<AxisRef>>> appIdCubeNameEntry : appIdCubeNames) {
+        for (Map.Entry<ApplicationID, Map<String, Set<AxisRef>>> appIdCubeNameEntry : appIdCubeNames)
+        {
             ApplicationID appId = appIdCubeNameEntry.key
             assertNotLockBlocked(appId)
             assertPermissions(appId, null, Action.UPDATE)
 
-            for (Map.Entry<String, Set<AxisRef>> cubeNameRefAxEntry : appIdCubeNameEntry.value) {
+            for (Map.Entry<String, Set<AxisRef>> cubeNameRefAxEntry : appIdCubeNameEntry.value)
+            {
                 String cubeName = cubeNameRefAxEntry.key
-                assertPermissions(appId, cubeName, Action.UPDATE)
+                Map record = persister.loadCubeRecord(appId, cubeName, null, getUserId())
+                String json = new String(IOUtilities.uncompressBytes(record.bytes as byte[]), "UTF-8")
 
-                String json = getCubeRawJson(appId, cubeName)
                 //TODO - fix asap!!! call loadCube() which will use new parser
                 Map jsonNCube = (Map) JsonReader.jsonToJava(json, [(JsonReader.USE_MAPS): true as Object])
                 Object[] axes = jsonNCube.axes as Object[]
 
-                for (AxisRef axisRef : cubeNameRefAxEntry.value) {
+                for (AxisRef axisRef : cubeNameRefAxEntry.value)
+                {
                     axisRef.with {
                         ApplicationID destAppId = new ApplicationID(srcAppId.tenant, destApp, destVersion, destStatus, destBranch)
                         assertPermissions(destAppId, null)
-
                         NCube target = loadCube(destAppId, destCubeName, null)
+                        
                         if (target == null)
                         {
                             throw new IllegalArgumentException("""\
@@ -1118,11 +1114,12 @@ target axis: ${destApp} / ${destVersion} / ${destCubeName}.${destAxisName}, user
                         }
 
                         boolean hasTransform = transformApp && transformVersion && transformStatus && transformBranch && transformCubeName
-                        if (hasTransform) {   // If transformer cube reference supplied, verify that the cube exists
+                        if (hasTransform)
+                        {   // If transformer cube reference supplied, verify that the cube exists
                             ApplicationID txAppId = new ApplicationID(srcAppId.tenant, transformApp, transformVersion, transformStatus, transformBranch)
-                            assertPermissions(txAppId, null)
-                            NCube transformCube = loadCube(txAppId, transformCubeName, null)
-                            if (transformCube == null)
+                            assertPermissions(txAppId, transformCubeName)
+                            Map transformCubeRecord = persister.loadCubeRecord(txAppId, transformCubeName, null, getUserId())
+                            if (transformCubeRecord == null)
                             {
                                 throw new IllegalArgumentException("""\
 Cannot point reference axis transformer to non-existing cube: ${transformCubeName}. \
@@ -1131,7 +1128,7 @@ target axis: ${transformApp} / ${transformVersion} / ${transformCubeName}, user:
                             }
                         }
 
-                        Map axis = axes.find { return (it as Map).name == srcAxisName } as Map
+                        Map axis = axes.find { return srcAxisName.equalsIgnoreCase((it as Map).name as String) } as Map
                         axis[REF_APP] = destApp
                         axis[REF_VERSION] = destVersion
                         axis[REF_STATUS] = destStatus
@@ -1160,6 +1157,7 @@ target axis: ${transformApp} / ${transformVersion} / ${transformCubeName}, user:
                 String updatedJson = JsonWriter.objectToJson(jsonNCube, [(JsonWriter.TYPE):false] as Map)
                 NCube ncube = NCube.fromSimpleJson(updatedJson)
                 ncube.applicationID = appId
+                assertPermissions(appId, cubeName, Action.UPDATE)
                 persister.updateCube(ncube, getUserId())
             }
         }
