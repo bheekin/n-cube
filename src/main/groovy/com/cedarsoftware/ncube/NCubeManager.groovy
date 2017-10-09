@@ -957,7 +957,17 @@ class NCubeManager implements NCubeMutableClient, NCubeTestServer
             cubeNamePattern = handleWildCard(cubeNamePattern)
         }
 
-        content = handleWildCard(content)
+        if (content)
+        {
+            while (content.startsWith('*'))
+            {
+                content = content.substring(1)
+            }
+            while (content.startsWith('*'))
+            {
+                content = content[0..-2]
+            }
+        }
 
         List<NCubeInfoDto> cubes = persister.search(appId, cubeNamePattern, content, options, getUserId())
         Set<String> validCubeNames = fastCheckPermissions(appId, Action.READ, cubes.collect { it.name })
@@ -2629,9 +2639,9 @@ target axis: ${transformApp} / ${transformVersion} / ${transformCubeName}, user:
      * Commit the passed in changed cube records identified by NCubeInfoDtos.
      * @return array of NCubeInfoDtos that are to be committed.
      */
-    Map<String, Object> commitBranch(ApplicationID appId, Object[] inputCubes = null)
+    Map<String, Object> commitBranch(ApplicationID appId, Object[] inputCubes = null, String notes = null)
     {
-        String prId = generatePullRequestHash(appId, inputCubes)
+        String prId = generatePullRequestHash(appId, inputCubes, notes)
         return mergePullRequest(prId)
     }
 
