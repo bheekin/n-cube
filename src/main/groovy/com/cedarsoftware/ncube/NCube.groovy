@@ -961,13 +961,15 @@ class NCube<T>
      * one exists (under Column's meta-key: 'DEFAULT_CELL'). If no column-level
      * default is specified (no non-null value provided), then the NCube level default
      * is chosen (if it exists). If no NCube level default is specified, then the
-     * defaultValue passed in is used, if it is non-null.
+     * defaultValue passed in is used, if it is non-null. The default value cache
+     * should only be used with mapReduce because of its repeated calculation of each
+     * column on all axes.
      * REQUIRED: The coordinate passed to this method must have already been run
      * through validateCoordinate(), which duplicates the coordinate and ensures the
      * coordinate has at least an entry for each axis (entry not needed for axes with
      * default column or rule axes).
      */
-    protected T getCellById(final Set<Long> colIds, final Map coordinate, final Map output, Object defaultValue = null)
+    protected T getCellById(final Set<Long> colIds, final Map coordinate, final Map output, Object defaultValue = null, Map columnDefaultCache = null)
     {
         // First, get a ThreadLocal copy of an NCube execution stack
         Deque<StackEntry> stackFrame = (Deque<StackEntry>) executionStack.get()
@@ -977,7 +979,7 @@ class NCube<T>
             // Form fully qualified cell lookup (NCube name + coordinate)
             // Add fully qualified coordinate to ThreadLocal execution stack
             final StackEntry entry = new StackEntry(name, coordinate)
-            stackFrame.push(entry)
+            stackFrame.addFirst(entry)
             pushed = true
             T cellValue
 
@@ -1013,17 +1015,10 @@ class NCube<T>
             cellValue = cells[colIds]
             if (cellValue == null && !cells.containsKey(colIds))
             {   // No cell, look for default
-                cellValue = (T) getColumnDefault(colIds)
+                cellValue = (T) getColumnDefault(colIds, columnDefaultCache)
                 if (cellValue == null)
                 {   // No Column Default, try NCube default, and finally passed in default
-                    if (defaultCellValue != null)
-                    {
-                        cellValue = defaultCellValue
-                    }
-                    else
-                    {
-                        cellValue = (T) defaultValue
-                    }
+                    cellValue = defaultCellValue == null ? (T) defaultValue : defaultCellValue
                 }
             }
 
@@ -1032,7 +1027,7 @@ class NCube<T>
                 Map ctx = prepareExecutionContext(coordinate, output)
                 return (T) executeExpression(ctx, (CommandCell)cellValue)
             }
-            else
+            else if (columnDefaultCache == null)
             {
                 trackInputKeysUsed(coordinate, output)
             }
@@ -1042,7 +1037,7 @@ class NCube<T>
         {	// Unwind stack: always remove if stacked pushed, even if Exception has been thrown
             if (pushed)
             {
-                stackFrame.pop()
+                stackFrame.removeFirst()
             }
         }
     }
@@ -1110,31 +1105,42 @@ class NCube<T>
      * Given the passed in column IDs, return the column level default value
      * if one exists or null otherwise.  In the case of intersection, then null
      * is returned, meaning that the n-cube level default cell value will be
-     * returned at intersections.
+     * returned at intersections. The default value cache should only be used
+     * with mapReduce because of its repeated calculation of each column on all axes.
      */
-    def getColumnDefault(Set<Long> colIds)
+    def getColumnDefault(Set<Long> colIds, Map columnDefaultCache = null)
     {
         def colDef = null
-
-        for (colId in colIds)
+        Iterator<Long> i = colIds.iterator()
+        while (i.hasNext())
         {
-            Axis axis = getAxisFromColumnId(colId)
-            if (axis == null)
-            {   // bad column id, continue check rest of column ids
-                continue
-            }
-            Column boundCol = axis.getColumnById(colId)
-            def metaValue = boundCol.getMetaProperty(Column.DEFAULT_VALUE)
-            if (metaValue != null)
+            long colId = i.next()
+            def defColValue
+            if (columnDefaultCache?.containsKey(colId))
             {
-                if (colDef != null)
-                {   // More than one specified in this set (intersection), therefore return null (use n-cube level default)
-                    if (colDef != metaValue)
-                    {
-                        return null
-                    }
+                defColValue = columnDefaultCache[colId]
+            }
+            else
+            {
+                Axis axis = getAxisFromColumnId(colId, false)
+                if (axis == null)
+                {   // bad column id, continue check rest of column ids
+                    continue
                 }
-                colDef = metaValue
+                Column boundCol = axis.getColumnById(colId)
+                if (boundCol != null)
+                {
+                    defColValue = boundCol.getMetaProperty(Column.DEFAULT_VALUE)
+                    columnDefaultCache?.put(colId, defColValue)
+                }
+            }
+            if (defColValue != null)
+            {
+                if (colDef != null && colDef != defColValue)
+                {   // More than one specified in this set (intersection), therefore return null (use n-cube level default)
+                    return null
+                }
+                colDef = defColValue
             }
         }
 
@@ -1206,23 +1212,27 @@ class NCube<T>
      * This will only return rows where this condition is true ('state' and 'attribute' are two column values from
      * the colAxisName). The values for each row in the rowAxis is bound to the where expression for each row.  If
      * the row passes the 'where' condition, it is included in the output.
-     * @param input Map the input Map just like it is used for getCell() or at().  Only needed when there are three (3)
-     * or more dimensions.  All values in the input map (excluding the axis specified by rowAxisName and colAxisName) are
-     * bound just as they are in getCell() or at().
-     * @param output Map the output Map use to write multiple return values to, just like getCell() or at().
-     * @param columnsToSearch Set which allows reducing the number of columns bound for use in the where clause.  If not
-     * specified, all columns on the colAxisName can be used.  For example, if you had an axis named 'attribute', and it
-     * has 10 columns on it, you could list just two (2) of the columns here, and only those columns would be placed into
-     * values accessible to the where clause via input.xxx == 'someValue'.  The mapReduce() API runs faster when fewer
-     * columns are included in the columnsToSearch.
-     * @param columnsToReturn Set of values to indicate which columns to return.  If not specified, the entire 'row' is
-     * returned.  For example, if you had an axis named 'attribute', and it has 10 columns on it, you could list just
-     * two (2) of the columns here, in the returned Map of rows, only these two columns will be in the returned Map.
-     * The columnsToSearch and columnsToReturn can be completely different, overlap, or not be specified.  This param
-     * is similar to the 'Select List' portion of the SQL SELECT statement.  It essentially defaults to '*', but you
-     * can have it return less column/value pairs in the returned Map if you add only the columns you want returned
-     * here.
-     * @param defaultValue Object placed here will be returned if there is no cell at the location
+     * @param options - options map that can include any of the following keys:
+     *    - "input" Map just like it is used for getCell() or at().  Only needed when there are three (3)
+     *      or more dimensions.  All values in the input map (excluding the axis specified by rowAxisName and colAxisName) are
+     *      bound just as they are in getCell() or at().
+     *    - "output" the output Map use to write multiple return values to, just like getCell() or at().
+     *    - "selectList" is a Collection of Column objects that indicates which will be returned (instead of *, less
+     *      columns can be return in the 'result set').
+     *    - "whereColumns" is a Collection of Column objects that will be sent to the 'where' closure.  Rather than
+     *      send all columns, fewer is better because each where column must be bound to a value for each row.
+     *    - MAP_REDUCE_COLUMNS_TO_SEARCH Set which allows reducing the number of columns bound for use in the where clause.  If not
+     *      specified, all columns on the colAxisName can be used.  For example, if you had an axis named 'attribute', and it
+     *      has 10 columns on it, you could list just two (2) of the columns here, and only those columns would be placed into
+     *      values accessible to the where clause via input.xxx == 'someValue'.  The mapReduce() API runs faster when fewer
+     *      columns are included in the columnsToSearch.
+     *    - MAP_REDUCE_COLUMNS_TO_RETURN Set of values to indicate which columns to return.  If not specified, the entire 'row' is
+     *      returned.  For example, if you had an axis named 'attribute', and it has 10 columns on it, you could list just
+     *      two (2) of the columns here, in the returned Map of rows, only these two columns will be in the returned Map.
+     *      The columnsToSearch and columnsToReturn can be completely different, overlap, or not be specified.  This param
+     *      is similar to the 'Select List' portion of the SQL SELECT statement.  It essentially defaults to '*', but you
+     *      can have it return less column/value pairs in the returned Map if you add only the columns you want returned here.
+     *    - MAP_REDUCE_DEFAULT_VALUE Object placed here will be returned if there is no cell at the location
      *                     pinpointed by the input coordinate.  Normally, the defaulValue of the
      *                     n-cube is returned, but if this parameter is passed a non-null value,
      *                     then it will be returned.  Optional.
@@ -1233,7 +1243,7 @@ class NCube<T>
      * where the keys are the column values (or names) for axis named colAxisName.  The associated values are the values
      * for each cell in the same column, for when the 'where' condition holds true (groovy true).
      */
-    private Map internalMapReduce(String rowAxisName, String colAxisName, Closure where = { true }, Map options = [:])
+    private Map internalMapReduce(String rowAxisName, String colAxisName, Closure where = { true }, Map options = [:], Map columnDefaultCache)
     {
         Map input = (Map) options.input ?: [:]
         Map output = (Map) options.output ?: [:]
@@ -1250,12 +1260,11 @@ class NCube<T>
 
         final Set<Long> ids = new LinkedHashSet<>(boundColumns)
         final Map matchingRows = new CaseInsensitiveMap()
-        final Map whereVars = new CaseInsensitiveMap()
+        final Map whereVars = new CaseInsensitiveMap(input)
 
         for (Column row : rowAxis.columns)
         {
-            whereVars.clear()
-            commandInput[rowAxisName] = rowAxis.getValueToLocateColumn(row)
+            commandInput.put(rowAxisName, rowAxis.getValueToLocateColumn(row))
             long rowId = row.id
             ids.add(rowId)
 
@@ -1263,19 +1272,18 @@ class NCube<T>
             {
                 long whereId = column.id
                 ids.add(whereId)
-                commandInput[colAxisName] = colAxis.getValueToLocateColumn(column)
+                commandInput.put(colAxisName, colAxis.getValueToLocateColumn(column))
                 Object colKey = isColDiscrete ? column.value : column.columnName
-                whereVars[colKey] = getCellById(ids, commandInput, output, defaultValue)
+                whereVars.put(colKey, getCellById(ids, commandInput, output, defaultValue, columnDefaultCache))
                 ids.remove(whereId)
             }
 
-            whereVars.putAll(input)
             def whereResult = where.maximumNumberOfParameters == 1 ? where(whereVars) : where(whereVars, commandInput)
 
             if (whereResult)
             {
                 Comparable key = getRowKey(isRowDiscrete, row, rowAxis)
-                matchingRows[key] = buildMapReduceResultRow(colAxis, selectList, whereVars, ids, commandInput, output, defaultValue)
+                matchingRows.put(key, buildMapReduceResultRow(colAxis, selectList, whereVars, ids, commandInput, output, defaultValue, columnDefaultCache))
             }
             ids.remove(rowId)
         }
@@ -1291,27 +1299,32 @@ class NCube<T>
      * This will only return rows where this condition is true ('state' and 'attribute' are two column values from
      * the colAxisName). The values for each row in the rowAxis is bound to the where expression for each row.  If
      * the row passes the 'where' condition, it is included in the output.
-     * @param input Map the input Map just like it is used for getCell() or at().  Only needed when there are three (3)
-     * or more dimensions.  All values in the input map (excluding the axis specified by rowAxisName and colAxisName) are
-     * bound just as they are in getCell() or at().
-     * @param output Map the output Map use to write multiple return values to, just like getCell() or at().
-     * @param columnsToSearch Set which allows reducing the number of columns bound for use in the where clause.  If not
-     * specified, all columns on the colAxisName can be used.  For example, if you had an axis named 'attribute', and it
-     * has 10 columns on it, you could list just two (2) of the columns here, and only those columns would be placed into
-     * values accessible to the where clause via input.xxx == 'someValue'.  The mapReduce() API runs faster when fewer
-     * columns are included in the columnsToSearch.
-     * @param columnsToReturn Set of values to indicate which columns to return.  If not specified, the entire 'row' is
-     * returned.  For example, if you had an axis named 'attribute', and it has 10 columns on it, you could list just
-     * two (2) of the columns here, in the returned Map of rows, only these two columns will be in the returned Map.
-     * The columnsToSearch and columnsToReturn can be completely different, overlap, or not be specified.  This param
-     * is similar to the 'Select List' portion of the SQL SELECT statement.  It essentially defaults to '*', but you
-     * can have it return less column/value pairs in the returned Map if you add only the columns you want returned
-     * here.
-     * @param defaultValue Object placed here will be returned if there is no cell at the location
+     * @param options - options map that can include any of the following keys:
+     *    - "input" Map just like it is used for getCell() or at().  Only needed when there are three (3)
+     *      or more dimensions.  All values in the input map (excluding the axis specified by rowAxisName and colAxisName) are
+     *      bound just as they are in getCell() or at().
+     *    - "output" the output Map use to write multiple return values to, just like getCell() or at().
+     *    - MAP_REDUCE_COLUMNS_TO_SEARCH Set which allows reducing the number of columns bound for use in the where clause.  If not
+     *      specified, all columns on the colAxisName can be used.  For example, if you had an axis named 'attribute', and it
+     *      has 10 columns on it, you could list just two (2) of the columns here, and only those columns would be placed into
+     *      values accessible to the where clause via input.xxx == 'someValue'.  The mapReduce() API runs faster when fewer
+     *      columns are included in the columnsToSearch.
+     *    - MAP_REDUCE_COLUMNS_TO_RETURN Set of values to indicate which columns to return.  If not specified, the entire 'row' is
+     *      returned.  For example, if you had an axis named 'attribute', and it has 10 columns on it, you could list just
+     *      two (2) of the columns here, in the returned Map of rows, only these two columns will be in the returned Map.
+     *      The columnsToSearch and columnsToReturn can be completely different, overlap, or not be specified.  This param
+     *      is similar to the 'Select List' portion of the SQL SELECT statement.  It essentially defaults to '*', but you
+     *      can have it return less column/value pairs in the returned Map if you add only the columns you want returned here.
+     *    - MAP_REDUCE_DEFAULT_VALUE Object placed here will be returned if there is no cell at the location
      *                     pinpointed by the input coordinate.  Normally, the defaulValue of the
      *                     n-cube is returned, but if this parameter is passed a non-null value,
      *                     then it will be returned.  Optional.
-     * @return Map containing the input bindings per matching 'where' row.
+     * @return Map of Maps - The outer Map is keyed by the column values of all row columns.  If the row Axis is a discrete
+     * axis, then the keys of the map are all the values of the columns.  If a non-discrete axis is used, then the keys
+     * are the name meta-key for each column.  If a non-discrete axis is used and there are no name attributes on the columns,
+     * and exception will be thrown.  The 'value' associated to the key (column value or column name) is a Map record,
+     * where the keys are the column values (or names) for axis named colAxisName.  The associated values are the values
+     * for each cell in the same column, for when the 'where' condition holds true (groovy true).
      */
     Map mapReduce(String colAxisName, Closure where = { true }, Map options = [:])
     {
@@ -1322,6 +1335,7 @@ class NCube<T>
         Map input = (Map)options.input ?: [:]
         Set columnsToSearch = (Set)options[MAP_REDUCE_COLUMNS_TO_SEARCH]
         Set columnsToReturn = (Set)options[MAP_REDUCE_COLUMNS_TO_RETURN]
+        final Map columnDefaultCache = new CaseInsensitiveMap()
 
         final Map commandInput = new TrackingMap<>(new CaseInsensitiveMap(input))
         Map commandOpts = new TrackingMap<>(new CaseInsensitiveMap(options))
@@ -1345,17 +1359,18 @@ class NCube<T>
         Map result
         if (otherAxes.empty)
         {
-            result = internalMapReduce(rowAxisName, colAxisName, where, commandOpts)
+            result = internalMapReduce(rowAxisName, colAxisName, where, commandOpts, columnDefaultCache)
         }
         else
         {
-            result = executeMultidimensionalMapReduce(otherAxes, rowAxisName, colAxisName, where, commandOpts)
+            result = executeMultidimensionalMapReduce(otherAxes, rowAxisName, colAxisName, where, commandOpts, columnDefaultCache)
         }
         return result
     }
 
-    private Map executeMultidimensionalMapReduce(Set<String> axes, String rowAxisName, String colAxisName, Closure where, Map options)
+    private Map executeMultidimensionalMapReduce(Set<String> axes, String rowAxisName, String colAxisName, Closure where, Map options, Map columnDefaultCache)
     {
+        Map result
         Map ret = new CaseInsensitiveMap()
         String axisName = axes.last() // take axis with most columns first
         List<Column> columns = getAxis(axisName).columns
@@ -1365,21 +1380,20 @@ class NCube<T>
 
         for (Column column : columns)
         {
-            Map result
-            input[axisName] = column.value
+            input.put(axisName, column.value)
             if (noMoreAxes)
             {
                 Map inputVal = new TrackingMap<>(new CaseInsensitiveMap(input))
-                result = internalMapReduce(rowAxisName, colAxisName, where, options)
+                result = internalMapReduce(rowAxisName, colAxisName, where, options, columnDefaultCache)
                 for (Map.Entry resultEntry : result)
                 {
-                    inputVal[rowAxisName] = resultEntry.key
-                    ret[inputVal] = resultEntry.value
+                    inputVal.put(rowAxisName, resultEntry.key)
+                    ret.put(inputVal, resultEntry.value)
                 }
             }
             else
             {
-                result = executeMultidimensionalMapReduce(otherAxes, rowAxisName, colAxisName, where, options)
+                result = executeMultidimensionalMapReduce(otherAxes, rowAxisName, colAxisName, where, options, columnDefaultCache)
                 ret.putAll(result)
             }
         }
@@ -1406,39 +1420,49 @@ class NCube<T>
 
     private Collection<Column> selectColumns(Axis axis, Set valuesMatchingColumns)
     {
+        Collection<Column> columns = []
         boolean isDiscrete = axis.type == AxisType.DISCRETE
-        if (!valuesMatchingColumns)
+
+        if (valuesMatchingColumns == null || valuesMatchingColumns.empty)
         {   // If empty or null, then treat as '*' (all columns)
-            valuesMatchingColumns = new CaseInsensitiveSet()
-            for (Column column : axis.columns)
+            if (isDiscrete)
             {
-                if (isDiscrete)
+                for (Column column : axis.columns)
                 {
-                    valuesMatchingColumns.add(column.value)
+                    columns.add(axis.findColumn(column.value))
                 }
-                else
+            }
+            else
+            {
+                for (Column column : axis.columns)
                 {
                     if (StringUtilities.isEmpty(column.columnName))
                     {
                         throw new IllegalStateException("Non-discrete axis columns must have a meta-property name set in order to use them for mapReduce().  Cube: ${name}, Axis: ${axis.name}")
                     }
-                    valuesMatchingColumns.add(column.columnName)
+                    columns.add(axis.findColumnByName(column.columnName))
                 }
             }
+            return columns
         }
-        Collection<Column> columns = []
-        for (Object value : valuesMatchingColumns)
+        
+        if (isDiscrete)
         {
-            Column column
-            if (isDiscrete)
+            for (Object value : valuesMatchingColumns)
             {
-                column = axis.findColumn((Comparable)value)
+                columns.add(axis.findColumn((Comparable)value))
             }
-            else
+        }
+        else
+        {
+            for (Object value : valuesMatchingColumns)
             {
-                column = axis.findColumnByName((String)value)
+                if (StringUtilities.isEmpty((String)value))
+                {
+                    throw new IllegalStateException("Non-discrete axis columns must have a meta-property name set in order to use them for mapReduce().  Cube: ${name}, Axis: ${axis.name}")
+                }
+                columns.add(axis.findColumnByName((String)value))
             }
-            columns.add(column)
         }
         return columns
     }
@@ -1477,18 +1501,18 @@ class NCube<T>
         for (String axisName : otherAxisNames)
         {
             Axis otherAxis = getAxis(axisName)
-            def value = input[axisName]
+            def value = input.get(axisName)
             Column column = otherAxis.findColumn((Comparable)value)
             if (!column)
             {
                 throw new CoordinateNotFoundException("Column: ${value} not found on axis: ${axisName} on cube: ${name}", name, null, axisName, value)
             }
-            boundColumns << column.id
+            boundColumns.add(column.id)
         }
         return boundColumns
     }
 
-    private Map buildMapReduceResultRow(Axis searchAxis, Collection<Column> selectList, Map whereVars, Set<Long> ids, Map commandInput, Map output, Object defaultValue = null)
+    private Map buildMapReduceResultRow(Axis searchAxis, Collection<Column> selectList, Map whereVars, Set<Long> ids, Map commandInput, Map output, Object defaultValue = null, Map columnDefaultCache)
     {
         String axisName = searchAxis.name
         boolean isDiscrete = searchAxis.type == AxisType.DISCRETE
@@ -1505,7 +1529,7 @@ class NCube<T>
             commandInput[axisName] = column.valueThatMatches
             long colId = column.id
             ids.add(colId)
-            result[colValue] = getCellById(ids, commandInput, output, defaultValue)
+            result[colValue] = getCellById(ids, commandInput, output, defaultValue, columnDefaultCache)
             ids.remove(colId)
         }
 
