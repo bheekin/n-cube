@@ -1,4 +1,7 @@
 ### Revision History
+* 4.3.3-SNAPSHOT
+  * Update to consume `guava 25.0-jre`
+  * Updated pom.xml build plugins  
 * 4.3.2
   * Bug fix: Pull requests could not be created for users without commit permissions.
   * Updated to consume `spring-boot 1.5.12.RELEASE`
