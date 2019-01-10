@@ -1,6 +1,12 @@
-### Revision History\
-* 4.3.4-SNAPSHOT
-  * 
+### Revision History
+* 4.4.2-SNAPSHOT
+  * Updated to consume Groovy 2.4.16
+  * Updated pom.xml to use gmavenplus 1.6.2 (from 1.6.1)
+* 4.4.1
+  * Updated to consume Spring 2.1.1.RELEASE 
+  * Updated to consume Spring 5.1.3.RELEASE
+* 4.4.0
+  * Updated to consume Spring 5.1.2.RELEASE
 * 4.3.3
   * Bug fix: Updated `NCubeController.saveJson()` to allow saving multiple NCubes
   * Update to consume `guava 26.0-jre`

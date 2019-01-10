@@ -4,14 +4,14 @@ import com.cedarsoftware.ncube.NCubeBaseTest
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
-import org.springframework.boot.context.embedded.EmbeddedServletContainerInitializedEvent
+import org.springframework.boot.web.context.WebServerInitializedEvent
 import org.springframework.context.ApplicationListener
 import org.springframework.stereotype.Component
 
 import java.util.regex.Pattern
 
 @Component
-class EmbeddedServletContainerListener implements ApplicationListener<EmbeddedServletContainerInitializedEvent>
+class EmbeddedServletContainerListener implements ApplicationListener<WebServerInitializedEvent>
 {
     private static final Logger LOG = LoggerFactory.getLogger(EmbeddedServletContainerListener.class)
     private static Pattern leadingSlash = ~/^[\/]?/
@@ -24,8 +24,7 @@ class EmbeddedServletContainerListener implements ApplicationListener<EmbeddedSe
     @Value('${ncube.tests.baseRemoteUrl:}')
     private String baseRemoteUrl
 
-    @Override
-    void onApplicationEvent(EmbeddedServletContainerInitializedEvent event) {
+    void onApplicationEvent(WebServerInitializedEvent event) {
         if (baseRemoteUrl)
         {
             NCubeBaseTest.baseRemoteUrl = baseRemoteUrl - leadingSlash
@@ -33,7 +32,7 @@ class EmbeddedServletContainerListener implements ApplicationListener<EmbeddedSe
         else
         {
             String host = 'localhost'
-            int port = event.embeddedServletContainer.port
+            int port = event.source.port
             String context = contextPath - leadingSlash - trailingSlash
             NCubeBaseTest.baseRemoteUrl = "http://${host}:${port}/${context}"
         }
